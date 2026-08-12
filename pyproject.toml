@@ -1,0 +1,22 @@
+[project]
+name = "seerr-mcp"
+version = "0.0.0"
+description = "MCP server for Seerr's v1 REST API"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["fastmcp>=2.0.0"]
+
+[project.scripts]
+seerr-mcp = "seerr_mcp:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "pyyaml>=6.0.0"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["integration: hits a real Seerr instance (needs SEERR_URL/SEERR_API_KEY)"]
+addopts = "-m 'not integration'"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
