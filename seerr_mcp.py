@@ -1,28 +1,39 @@
 """MCP server exposing Seerr's REST API (OpenAPI 3.0.2, /api/v1) as tools.
 
-One tool per endpoint, generated from the vendored spec at
-tests/data/seerr_openapi.yml (seerr-team/seerr develop HEAD
-39ff48c650d30ced0516574c55914d0bd26c9983).
-Full coverage: every JSON-producing endpoint under /api/v1. Deprecated
-`/blacklist/*` aliases (sunset 2026-06-01) are excluded in favour of the
-`/blocklist/*` routers.
+Full coverage of every JSON-producing endpoint under /api/v1 (deprecated
+`/blacklist/*` aliases, sunset 2026-06-01, are excluded in favour of the
+`/blocklist/*` routers), but exposed as 15 resource-scoped *portmanteau*
+tools instead of one tool per endpoint. Each portmanteau tool (e.g.
+seerr_requests, seerr_settings_notifications) takes an `operation` enum plus
+an `arguments` dict; see AGENTS.md for the rationale (a 200+-tool server
+blows the MCP context budget on session start).
+
+The vendored spec at tests/data/seerr_openapi.yml (seerr-team/seerr develop
+HEAD 39ff48c650d30ced0516574c55914d0bd26c9983) still generates one async
+function per endpoint into `_TOOL_REGISTRY` via scripts/generate_registry.py
+- keep it in sync with the spec (see AGENTS.md). Those functions are no
+longer registered as individual MCP tools; `_GROUPS` below buckets them by
+resource, and `_register_group` wraps each bucket in a single dispatching
+tool that calls the right function by name. Nothing about the endpoint
+functions themselves changes - grouping is purely a registration-time
+concern. Seerr's domain shape doesn't match the other *arr servers (settings
+alone is 82/208 endpoints), so `_GROUPS` here is its own taxonomy, not the
+one shared by radarr/sonarr/bookshelf.
 
 Auth is the X-Api-Key header, generated in Seerr Settings > General. An
 optional X-API-User header impersonates a specific user id (default: user 1).
-GET endpoints are marked readOnlyHint=True; POST/PUT writes are
-readOnlyHint=False; DELETE endpoints additionally set destructiveHint=True so
-clients can warn before calling them. Bodies are passed as opaque dicts/lists.
-
-Tools are built at import time from the `_TOOL_REGISTRY` table below: one
-async closure per entry, registered through FastMCP's Tool.from_function. The
-registry is generated from the spec by scripts/generate_registry.py; keep it
-in sync with the vendored file (see AGENTS.md). build_client points at the
-origin and appends /api/v1, matching the spec's base path.
+A group tool is marked readOnlyHint=True only when every operation in it is
+a GET that isn't also flagged `force_write` (one endpoint, `GET
+/settings/discover/reset`, mutates state despite being a GET - see
+`_TOOL_REGISTRY`'s `force_write` key); mixed groups carry no hints. Bodies
+are passed as opaque dicts/lists. build_client points at the origin and
+appends /api/v1, matching the spec's base path.
 """
 
+import inspect
 import os
 import sys
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -83,6 +94,253 @@ async def _req(
 def _omit(params: dict[str, Any]) -> dict[str, Any]:
     """Drop keys whose values are empty/None so the API's defaults apply."""
     return {k: v for k, v in params.items() if v not in ("", None)}
+
+
+# Resource groups for portmanteau registration. Every _TOOL_REGISTRY name
+# must appear in exactly one group - see test_all_registry_names_grouped.
+# Seerr's own taxonomy (settings-heavy), not the shared *arr one.
+_GROUPS: dict[str, tuple[str, ...]] = {
+    "seerr_settings_general": (
+        'seerr_add_discover_slider',
+        'seerr_cancel_job',
+        'seerr_create_settings_jellyfin',
+        'seerr_create_settings_jellyfin_sync',
+        'seerr_create_settings_main',
+        'seerr_create_settings_metadatas_test',
+        'seerr_create_settings_network',
+        'seerr_create_settings_plex',
+        'seerr_create_settings_plex_sync',
+        'seerr_create_settings_radarr',
+        'seerr_create_settings_radarr_test',
+        'seerr_create_settings_sonarr',
+        'seerr_create_settings_sonarr_test',
+        'seerr_create_settings_tautulli',
+        'seerr_delete_discover_slider',
+        'seerr_delete_settings_radarr',
+        'seerr_delete_settings_sonarr',
+        'seerr_flush_cache',
+        'seerr_flush_dns_cache',
+        'seerr_get_settings_radarr_profiles',
+        'seerr_initialize_app',
+        'seerr_list_discover_sliders',
+        'seerr_list_settings_about',
+        'seerr_list_settings_cache',
+        'seerr_list_settings_jellyfin',
+        'seerr_list_settings_jellyfin_library',
+        'seerr_list_settings_jellyfin_sync',
+        'seerr_list_settings_jellyfin_users',
+        'seerr_list_settings_jobs',
+        'seerr_list_settings_logs',
+        'seerr_list_settings_main',
+        'seerr_list_settings_metadatas',
+        'seerr_list_settings_network',
+        'seerr_list_settings_plex',
+        'seerr_list_settings_plex_devices_servers',
+        'seerr_list_settings_plex_library',
+        'seerr_list_settings_plex_sync',
+        'seerr_list_settings_plex_users',
+        'seerr_list_settings_public',
+        'seerr_list_settings_radarr',
+        'seerr_list_settings_sonarr',
+        'seerr_list_settings_tautulli',
+        'seerr_regenerate_api_key',
+        'seerr_reset_discover_sliders',
+        'seerr_run_job',
+        'seerr_schedule_job',
+        'seerr_update_discover_slider',
+        'seerr_update_discover_sliders',
+        'seerr_update_settings_metadatas',
+        'seerr_update_settings_radarr',
+        'seerr_update_settings_sonarr',
+    ),
+    "seerr_settings_notifications": (
+        'seerr_create_settings_notifications_discord',
+        'seerr_create_settings_notifications_discord_test',
+        'seerr_create_settings_notifications_email',
+        'seerr_create_settings_notifications_email_test',
+        'seerr_create_settings_notifications_gotify',
+        'seerr_create_settings_notifications_gotify_test',
+        'seerr_create_settings_notifications_ntfy',
+        'seerr_create_settings_notifications_ntfy_test',
+        'seerr_create_settings_notifications_pushbullet',
+        'seerr_create_settings_notifications_pushbullet_test',
+        'seerr_create_settings_notifications_pushover',
+        'seerr_create_settings_notifications_pushover_test',
+        'seerr_create_settings_notifications_slack',
+        'seerr_create_settings_notifications_slack_test',
+        'seerr_create_settings_notifications_telegram',
+        'seerr_create_settings_notifications_telegram_test',
+        'seerr_create_settings_notifications_webhook',
+        'seerr_create_settings_notifications_webhook_test',
+        'seerr_create_settings_notifications_webpush',
+        'seerr_create_settings_notifications_webpush_test',
+        'seerr_list_pushover_sounds',
+        'seerr_list_settings_notifications_discord',
+        'seerr_list_settings_notifications_email',
+        'seerr_list_settings_notifications_gotify',
+        'seerr_list_settings_notifications_ntfy',
+        'seerr_list_settings_notifications_pushbullet',
+        'seerr_list_settings_notifications_pushover',
+        'seerr_list_settings_notifications_slack',
+        'seerr_list_settings_notifications_telegram',
+        'seerr_list_settings_notifications_webhook',
+        'seerr_list_settings_notifications_webpush',
+    ),
+    "seerr_users": (
+        'seerr_batch_update_users',
+        'seerr_create_user',
+        'seerr_create_user_settings_linked_accounts_jellyfin',
+        'seerr_create_user_settings_linked_accounts_jellyfin_quickconnect',
+        'seerr_create_user_settings_linked_accounts_plex',
+        'seerr_create_user_settings_main',
+        'seerr_create_user_settings_notifications',
+        'seerr_create_user_settings_password',
+        'seerr_create_user_settings_permissions',
+        'seerr_delete_user',
+        'seerr_delete_user_push_subscription',
+        'seerr_delete_user_settings_linked_accounts_jellyfin',
+        'seerr_delete_user_settings_linked_accounts_plex',
+        'seerr_get_user',
+        'seerr_get_user_jellyfin',
+        'seerr_get_user_push_subscription',
+        'seerr_get_user_quota',
+        'seerr_get_user_requests',
+        'seerr_get_user_settings_main',
+        'seerr_get_user_settings_notifications',
+        'seerr_get_user_settings_password',
+        'seerr_get_user_settings_permissions',
+        'seerr_get_user_watch_data',
+        'seerr_get_user_watchlist',
+        'seerr_import_jellyfin_users',
+        'seerr_import_plex_users',
+        'seerr_list_user',
+        'seerr_list_user_push_subscriptions',
+        'seerr_register_push_subscription',
+        'seerr_update_user',
+    ),
+    "seerr_discover": (
+        'seerr_get_discover_keyword_movies',
+        'seerr_get_discover_movies_genre',
+        'seerr_get_discover_movies_language',
+        'seerr_get_discover_movies_studio',
+        'seerr_get_discover_tv_genre',
+        'seerr_get_discover_tv_language',
+        'seerr_get_discover_tv_network',
+        'seerr_get_keyword',
+        'seerr_get_network',
+        'seerr_get_studio',
+        'seerr_list_backdrops',
+        'seerr_list_certifications_movie',
+        'seerr_list_certifications_tv',
+        'seerr_list_discover_genreslider_movie',
+        'seerr_list_discover_genreslider_tv',
+        'seerr_list_discover_movies',
+        'seerr_list_discover_movies_upcoming',
+        'seerr_list_discover_trending',
+        'seerr_list_discover_tv',
+        'seerr_list_discover_tv_upcoming',
+        'seerr_list_discover_watchlist',
+        'seerr_list_genres_movie',
+        'seerr_list_genres_tv',
+        'seerr_list_languages',
+        'seerr_list_regions',
+        'seerr_list_watchproviders_movies',
+        'seerr_list_watchproviders_regions',
+        'seerr_list_watchproviders_tv',
+    ),
+    "seerr_media_titles": (
+        'seerr_get_collection',
+        'seerr_get_movie',
+        'seerr_get_movie_ratings',
+        'seerr_get_movie_ratingscombined',
+        'seerr_get_movie_recommendations',
+        'seerr_get_movie_similar',
+        'seerr_get_person',
+        'seerr_get_person_combined_credits',
+        'seerr_get_tv',
+        'seerr_get_tv_ratings',
+        'seerr_get_tv_recommendations',
+        'seerr_get_tv_season',
+        'seerr_get_tv_similar',
+    ),
+    "seerr_auth": (
+        'seerr_authenticate_jellyfin_quickconnect',
+        'seerr_check_jellyfin_quickconnect',
+        'seerr_get_me',
+        'seerr_initiate_jellyfin_quickconnect',
+        'seerr_login_jellyfin',
+        'seerr_login_local',
+        'seerr_login_plex',
+        'seerr_logout',
+        'seerr_request_password_reset',
+        'seerr_reset_password',
+    ),
+    "seerr_issues": (
+        'seerr_create_issue',
+        'seerr_create_issue_comment',
+        'seerr_delete_issue',
+        'seerr_delete_issuecomment',
+        'seerr_get_issue',
+        'seerr_get_issuecomment',
+        'seerr_list_issue',
+        'seerr_list_issue_count',
+        'seerr_set_issue_status',
+        'seerr_update_issuecomment',
+    ),
+    "seerr_requests": (
+        'seerr_create_request',
+        'seerr_delete_request',
+        'seerr_get_request',
+        'seerr_list_request',
+        'seerr_list_request_count',
+        'seerr_retry_request',
+        'seerr_set_request_status',
+        'seerr_update_request',
+    ),
+    "seerr_blocklist": (
+        'seerr_create_blocklist',
+        'seerr_create_blocklist_collection',
+        'seerr_delete_blocklist',
+        'seerr_delete_blocklist_collection',
+        'seerr_get_blocklist',
+        'seerr_list_blocklist',
+    ),
+    "seerr_media_records": (
+        'seerr_delete_media',
+        'seerr_delete_media_file',
+        'seerr_get_media_watch_data',
+        'seerr_list_media',
+        'seerr_set_media_status',
+    ),
+    "seerr_service_arr": (
+        'seerr_get_service_radarr',
+        'seerr_get_service_sonarr',
+        'seerr_get_service_sonarr_lookup',
+        'seerr_list_service_radarr',
+        'seerr_list_service_sonarr',
+    ),
+    "seerr_override_rules": (
+        'seerr_create_overriderule',
+        'seerr_delete_overriderule',
+        'seerr_list_overriderule',
+        'seerr_update_overriderule',
+    ),
+    "seerr_search": (
+        'seerr_list_search',
+        'seerr_list_search_company',
+        'seerr_list_search_keyword',
+    ),
+    "seerr_system_status": (
+        'seerr_list_status',
+        'seerr_list_status_appdata',
+    ),
+    "seerr_watchlist": (
+        'seerr_create_watchlist',
+        'seerr_delete_watchlist',
+    ),
+}
+
+
 _TOOL_REGISTRY: list[dict[str, Any]] = [
  {'name': 'seerr_list_status',
   'method': 'GET',
@@ -2162,21 +2420,57 @@ def _tool_source(spec: dict[str, Any]) -> str:
     )
 
 
+def _op_line(name: str, fn: Any, force_write: bool) -> str:
+    """One line of a group tool's description: signature + one-line doc."""
+    sig = ", ".join(
+        p.name if p.default is inspect.Parameter.empty else f"{p.name}={p.default!r}"
+        for p in inspect.signature(fn).parameters.values()
+    )
+    note = " (WRITE — a GET that mutates state)" if force_write else ""
+    return f"- {name}({sig}) — {' '.join((fn.__doc__ or '').split())}{note}"
+
+
+def _register_group(group: str, names: tuple[str, ...], ns: dict[str, Any], spec_of: dict[str, dict[str, Any]]) -> None:
+    """Register one dispatching tool that fans out to every endpoint function
+    named in `names`. The endpoint functions themselves are untouched -
+    they're just looked up by name instead of each becoming its own tool."""
+    fns = {n: ns[n] for n in names}
+
+    async def dispatch(operation: str, arguments: JSONObj | None = None) -> JSONVal:
+        fn = fns.get(operation)
+        if fn is None:
+            raise ToolError(f"Unknown operation {operation!r} for {group}. Valid: {', '.join(fns)}")
+        return await fn(**(arguments or {}))
+
+    dispatch.__annotations__["operation"] = Literal[names]
+    # force_write GETs (currently just seerr_reset_discover_sliders) count as
+    # non-GET for the all-GET check, matching the original per-tool logic
+    # that gave them WRITE instead of READONLY.
+    effective_methods = {
+        "WRITE" if spec_of[n].get("force_write") else spec_of[n]["method"] for n in names
+    }
+    ann = READONLY if effective_methods == {"GET"} else None
+    mcp.add_tool(
+        Tool.from_function(
+            dispatch,
+            name=group,
+            description=(
+                f"{group.replace('_', ' ')} operations on Seerr. Pass `operation` and an "
+                f"`arguments` dict matching that operation's parameters.\n\n"
+                + "\n".join(_op_line(n, f, spec_of[n].get("force_write", False)) for n, f in fns.items())
+            ),
+            annotations=ann,
+        )
+    )
+
+
 def register_tools() -> None:
     src = "\n".join(_tool_source(spec) for spec in _TOOL_REGISTRY)
     ns: dict[str, Any] = {}
     exec(src, globals(), ns)
-    for spec in _TOOL_REGISTRY:
-        fn = ns[spec["name"]]
-        if spec.get("force_write"):
-            ann = WRITE
-        elif spec["method"] == "GET":
-            ann = READONLY
-        elif spec["method"] == "DELETE":
-            ann = DESTRUCTIVE
-        else:
-            ann = WRITE
-        mcp.add_tool(Tool.from_function(fn, name=spec["name"], description=spec["doc"], annotations=ann))
+    spec_of = {spec["name"]: spec for spec in _TOOL_REGISTRY}
+    for group, names in _GROUPS.items():
+        _register_group(group, names, ns, spec_of)
 
 
 register_tools()

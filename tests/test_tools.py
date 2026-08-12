@@ -100,9 +100,15 @@ async def server(recorder, monkeypatch):
     await client.aclose()
 
 
+_OP_GROUP = {op: group for group, ops in seerr_mcp._GROUPS.items() for op in ops}
+
+
 async def call(server, tool, **kwargs):
+    """Call `tool` (an endpoint operation name) through the portmanteau group
+    tool that now hosts it, so every existing per-endpoint test keeps working
+    unmodified aside from this helper."""
     async with Client(server) as c:
-        return await c.call_tool(tool, kwargs)
+        return await c.call_tool(_OP_GROUP[tool], {"operation": tool, "arguments": kwargs})
 
 
 # --- one test per endpoint ---------------------------------------------------
@@ -130,6 +136,29 @@ def test_registry_covers_spec_exactly():
 def test_all_registered_tools_have_unique_names():
     names = [s["name"] for s in seerr_mcp._TOOL_REGISTRY]
     assert len(names) == len(set(names))
+
+
+def test_all_registry_names_grouped():
+    """Every registry endpoint must land in exactly one portmanteau group -
+    this is the safety net for the group-tool consolidation."""
+    registry_names = [s["name"] for s in seerr_mcp._TOOL_REGISTRY]
+    grouped_names = [n for names in seerr_mcp._GROUPS.values() for n in names]
+    assert sorted(grouped_names) == sorted(registry_names)
+    assert len(grouped_names) == len(set(grouped_names))
+
+
+async def test_group_tools_are_the_only_registered_tools(server):
+    async with Client(server) as c:
+        tools = await c.list_tools()
+    assert {t.name for t in tools} == set(seerr_mcp._GROUPS)
+
+
+async def test_unknown_operation_rejected_by_schema(server):
+    # The Literal[...] enum on `operation` means an invalid value never
+    # reaches _register_group's dispatch body - pydantic rejects it first.
+    with pytest.raises(ToolError, match="validation error"):
+        async with Client(server) as c:
+            await c.call_tool("seerr_search", {"operation": "not_a_real_operation"})
 
 
 # --- query params --------------------------------------------------------------
